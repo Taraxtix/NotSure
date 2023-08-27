@@ -116,7 +116,46 @@ impl<'a> Iterator for Lexer<'a> {
             return None;
         }
         let start = self.cursor;
-        if self.content[start].is_ascii_digit() {
+
+        if self.content[start] == '\'' {
+            self.cursor += 1;
+            while !self.is_empty() && self.content[self.cursor] != '\'' {
+                self.cursor += 1;
+                if self.content[self.cursor - 1] == '\n'
+                    || (self.is_empty() && self.content[self.cursor] != '\'')
+                {
+                    eprintln!("ERROR: {}: Unfinished char literal ", self.get_loc());
+                    exit(1);
+                }
+                if self.content[self.cursor - 1] == '\\' {
+                    self.cursor += 1;
+                }
+            }
+            self.cursor += 1;
+            if self.cursor - start < 3 {
+                eprintln!("ERROR: {}: empty char literal ", self.get_loc());
+                eprintln!(
+                    "INFO: Got: {} with size {}",
+                    self.content[start..self.cursor].iter().collect::<String>(),
+                    self.cursor - start
+                );
+                exit(1);
+            }
+            let c_lit = self.content[start..self.cursor]
+                .iter()
+                .collect::<String>()
+                .replace("\\n", "\n")
+                .replace("\\t", "\t")
+                .replace("\\r", "\r")
+                .replace("\\'", "'")
+                .replace("\\\"", "\"")
+                .as_bytes()[1] as i64;
+
+            Some(Token {
+                loc: self.get_loc(),
+                token_type: TokenType::IntLit(c_lit),
+            })
+        } else if self.content[start].is_ascii_digit() {
             while !self.is_empty() && self.content[self.cursor].is_ascii_digit() {
                 self.cursor += 1;
             }

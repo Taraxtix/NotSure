@@ -14,6 +14,7 @@ A statement can be one of the followed :
     - `let identifier = [arg];` (Declare the variable `identifier` and initialize it with `[arg]`)
     - `identifier = [arg];` (Changes the value of `identifier` to `[arg]`)
 An argument (`[arg]`) can be one of the followed :
+    - `char_literal`
     - `integer_literal`
     - `( [arg] )`
     - `[arg] [bin_op] [arg]`
