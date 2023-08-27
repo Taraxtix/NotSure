@@ -92,10 +92,36 @@ impl Arg {
 
     fn parse_bin_op(first: Token, tokens: &mut Vec<Token>, op_type: OpType, arg1: Arg) -> Self {
         if let Some(arg2) = Self::parse(tokens) {
-            if let Arg::BinOp(_, _, prev_arg2) = arg1 {
-                todo!("Check for mult and divide priority")
+            if let Arg::BinOp(op_type_1, arg1_1, arg1_2) = arg1.clone() {
+                match op_type {
+                    OpType::Times | OpType::Divide => Arg::BinOp(
+                        op_type_1,
+                        arg1_1,
+                        Box::new(Arg::BinOp(op_type, arg1_2, Box::new(arg2))),
+                    ),
+                    OpType::Modulo
+                    | OpType::BitwiseOr
+                    | OpType::BitwiseAnd
+                    | OpType::Plus
+                    | OpType::Minus => Arg::BinOp(op_type, Box::new(arg1), Box::new(arg2)),
+                }
             } else {
-                todo!("return arg")
+                if let Arg::BinOp(op_type_2, arg2_1, arg2_2) = arg2.clone() {
+                    match op_type {
+                        OpType::Times | OpType::Divide => Arg::BinOp(
+                            op_type_2,
+                            Box::new(Arg::BinOp(op_type, Box::new(arg1), arg2_1)),
+                            arg2_2,
+                        ),
+                        OpType::Modulo
+                        | OpType::BitwiseOr
+                        | OpType::BitwiseAnd
+                        | OpType::Plus
+                        | OpType::Minus => Arg::BinOp(op_type, Box::new(arg1), Box::new(arg2)),
+                    }
+                } else {
+                    Arg::BinOp(op_type, Box::new(arg1), Box::new(arg2))
+                }
             }
         } else {
             eprintln!(
@@ -108,11 +134,8 @@ impl Arg {
 
     fn compile(&self, asm: &mut dyn Write, prog: &mut Program) -> Result<usize, Error> {
         match self {
-            Arg::IntLit(value) => {
-                asm.write(format!("    mov     rax, {value}\n").as_bytes())?;
-                asm.write("    push    rax\n".as_bytes())
-            }
-            Arg::Paren(statement) => statement.compile(asm, prog),
+            Arg::IntLit(value) => asm.write(format!("    push    {value}\n").as_bytes()),
+            Arg::Paren(arg) => arg.compile(asm, prog),
             Arg::Ident(name) => {
                 if let Some(offset) = prog.vars.get(name) {
                     asm.write(
@@ -127,7 +150,29 @@ impl Arg {
                     exit(1);
                 }
             }
-            Arg::BinOp(op_type, arg1, arg2) => todo!(),
+            Arg::BinOp(op_type, arg1, arg2) => {
+                arg2.compile(asm, prog)?;
+                arg1.compile(asm, prog)?;
+                asm.write("    pop     rax\n".as_bytes())?;
+                asm.write("    pop     rbx\n".as_bytes())?;
+                match op_type {
+                    OpType::Times => asm.write("    mul     rbx\n".as_bytes())?,
+                    OpType::Divide => {
+                        asm.write("    mov     rdx, 0\n".as_bytes())?;
+                        asm.write("    div     rbx\n".as_bytes())?
+                    }
+                    OpType::Modulo => {
+                        asm.write("    mov     rdx, 0\n".as_bytes())?;
+                        asm.write("    div     rbx\n".as_bytes())?;
+                        asm.write("    mov     rax, rdx\n".as_bytes())?
+                    }
+                    OpType::BitwiseOr => asm.write("    add     rax, rbx\n".as_bytes())?,
+                    OpType::BitwiseAnd => asm.write("    and     rax, rbx\n".as_bytes())?,
+                    OpType::Plus => asm.write("    add     rax, rbx\n".as_bytes())?,
+                    OpType::Minus => asm.write("    sub     rax, rbx\n".as_bytes())?,
+                };
+                asm.write("    push    rax\n".as_bytes())
+            }
         }
     }
 }
