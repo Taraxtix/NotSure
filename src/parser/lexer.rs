@@ -47,6 +47,7 @@ pub enum TokenType {
     Dbg,
     Syscall,
     Comma,
+    Dereference,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -130,6 +131,7 @@ impl Display for TokenType {
             TokenType::Comma => "Comma".fmt(f),
             TokenType::Do => "Do".fmt(f),
             TokenType::StringLit(_) => "StringLiteral".fmt(f),
+            TokenType::Dereference => "Dereference".fmt(f),
         }
     }
 }
@@ -371,10 +373,19 @@ impl<'a> Iterator for Lexer<'a> {
                         })
                     }
                 }
-                "*" => Some(Token {
-                    loc: self.get_loc(),
-                    token_type: TokenType::BinOp(OpType::Times),
-                }),
+                "*" => {
+                    if let Some(_) = self.q_pop_if(|c| *c == ':') {
+                        Some(Token {
+                            loc: self.get_loc(),
+                            token_type: TokenType::Dereference,
+                        })
+                    } else {
+                        Some(Token {
+                            loc: self.get_loc(),
+                            token_type: TokenType::BinOp(OpType::Times),
+                        })
+                    }
+                }
                 "/" => Some(Token {
                     loc: self.get_loc(),
                     token_type: TokenType::BinOp(OpType::Divide),
@@ -402,7 +413,7 @@ impl<'a> Iterator for Lexer<'a> {
                             loc: self.get_loc(),
                             token_type: TokenType::BinOp(OpType::LogicalAnd),
                         })
-                    } else if self.first_is(|c| c.is_alphabetic() || c == '_') {
+                    } else if let Some(_) = self.q_pop_if(|c| *c == ':') {
                         Some(Token {
                             token_type: TokenType::Address,
                             loc: self.get_loc(),

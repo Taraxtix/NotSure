@@ -22,6 +22,7 @@ A statement can be one of the followed :
 - `exit [arg];` (Exit the program with `[arg]` as an exit code)
 - `let identifier = [arg];` (Declare the variable `identifier` and initialize it with `[arg]`)
 - `identifier = [arg];` (Changes the value of `identifier` to `[arg]`)
+- `*:[arg] = [arg];` (Change the value at the address)
 
 An argument (`[arg]`) can be one of the followed :
 
@@ -31,7 +32,8 @@ An argument (`[arg]`) can be one of the followed :
 - `( [arg] )`
 - `[arg] [bin_op] [arg]`
 - `identifier` (The value stored by `identifier`)
-- `&identifier` (The address where `identifier` is stored)
+- `&:identifier` (The address where `identifier` is stored)
+- `*:[arg]` (The value stored at the address `[arg]`)
 
 The binary operators (`[bin_op]`) that are currently supported are:
 

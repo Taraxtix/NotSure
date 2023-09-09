@@ -29,6 +29,7 @@ pub enum Arg {
     Paren(Box<Arg>),
     BinOp(OpType, Box<Arg>, Box<Arg>),
     Address(String),
+    Dereference(Box<Arg>),
 }
 
 #[derive(Debug, Clone)]
@@ -47,6 +48,7 @@ pub enum Statement {
     ControlFlow(CfType),
     Dbg(Arg),
     Syscall(Vec<Arg>),
+    DereferenceActu(Arg, Arg),
 }
 //#endregion
 
@@ -102,6 +104,7 @@ impl Arg {
             }
             TokenType::OParen => Some(Self::parse_paren(first.clone(), tokens)),
             TokenType::StringLit(str_lit) => Some(Self::StringLit(str_lit)),
+            TokenType::Dereference => Some(Self::Dereference(Box::new(Self::parse(tokens)?))),
             TokenType::Address => {
                 if let Some(Arg::Ident(name)) = Self::parse(tokens) {
                     Some(Arg::Address(name))
@@ -279,6 +282,12 @@ impl Arg {
                 };
                 prog.push(asm, "rax".to_string())
             }
+            Arg::Dereference(address) => {
+                address.compile(asm, prog)?;
+                prog.pop(asm, "rbx".to_string())?;
+                asm.write("    mov     rax, QWORD [rbx]\n".as_bytes())?;
+                prog.push(asm, "rax".to_string())
+            }
         }
     }
 }
@@ -390,9 +399,37 @@ impl Statement {
             TokenType::Dbg => Some(Self::parse_dbg(first.clone(), tokens)),
 
             TokenType::Syscall => Some(Self::parse_syscall(first, tokens)),
-
+            TokenType::Dereference => Some(Self::parse_dereference_actu(first, tokens)),
             _ => Self::wrong_token(first),
         }
+    }
+
+    fn parse_dereference_actu(first: Token, tokens: &mut Vec<Token>) -> Self {
+        let address = Arg::parse(tokens).unwrap_or_else(|| {
+            exit_msg(format!(
+                "{} Expected an argument for `{}`",
+                first.loc, first.token_type
+            ))
+        });
+        if let None = tokens.q_pop_if(|tok| matches!(tok.token_type, TokenType::Equal)) {
+            exit_msg(format!(
+                "{} Expected an equal sign after `{}`",
+                first.loc, first.token_type
+            ));
+        }
+        let value = Arg::parse(tokens).unwrap_or_else(|| {
+            exit_msg(format!(
+                "{} Expected an argument for `{}`",
+                first.loc, first.token_type
+            ))
+        });
+        if let None = tokens.q_pop_if(|tok| matches!(tok.token_type, TokenType::Semi)) {
+            exit_msg(format!(
+                "{} Expected a semicolon after `{}`",
+                first.loc, first.token_type
+            ))
+        }
+        Self::DereferenceActu(address, value)
     }
 
     fn parse_scope(open: Token, tokens: &mut Vec<Token>) -> Self {
@@ -602,6 +639,13 @@ impl Statement {
                     prog.pop(asm, regs[idx].to_string())?;
                 }
                 asm.write("    syscall\n".as_bytes())
+            }
+            Statement::DereferenceActu(address, value) => {
+                address.compile(asm, prog)?;
+                value.compile(asm, prog)?;
+                prog.pop(asm, "rbx".to_string())?;
+                prog.pop(asm, "rax".to_string())?;
+                asm.write("    mov     QWORD [rax], rbx\n".as_bytes())
             }
         }
     }
