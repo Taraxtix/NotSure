@@ -1,1 +1,7 @@
 /target
+*.out
+grammar.*
+test.ns
+*.asm
+**/.vscode
+src/parser.log

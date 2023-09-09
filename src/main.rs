@@ -1,3 +1,4 @@
+//#region Imports
 use std::{
     env::args,
     fs::{self, OpenOptions},
@@ -6,6 +7,7 @@ use std::{
 
 use parser::{lexer::Lexer, Program};
 pub mod parser;
+//#endregion
 
 fn usage(args: Vec<String>) -> String {
     let mut usage = format!("Usage: {} <filepath> [option]\n", args.get(0).unwrap());
@@ -18,15 +20,14 @@ fn usage(args: Vec<String>) -> String {
 
 fn main() {
     let args = args().collect::<Vec<_>>();
-
     if args.len() < 2 {
         eprintln!("ERROR: Not enough argument.");
         eprintln!("{}", usage(args));
         exit(1);
     }
 
-    let filepath = args.get(1).unwrap();
-    let file_content = match fs::read_to_string(filepath) {
+    let filepath = args.get(1).unwrap().to_string();
+    let file_content = match fs::read_to_string(filepath.clone()) {
         Ok(content) => content,
         Err(err) => {
             eprintln!("ERROR: cannot read the file at {filepath}: {err}");
@@ -35,7 +36,7 @@ fn main() {
     };
     let char_content = &file_content.chars().collect::<Vec<char>>();
     let mut tokens = Lexer::new(filepath, char_content).collect::<Vec<_>>();
-    let program = Program::parse(&mut tokens);
+    let mut program = Program::parse(&mut tokens);
 
     let mut output_filepath = "a.out".to_string();
     if let Some(option) = args.get(2) {
@@ -73,38 +74,40 @@ fn main() {
     println!("INFO: Starting compilation...");
     program.compile(&mut asm).expect("Cannot write to asm");
 
-    println!("INFO: Running nasm -felf64 tmp.asm");
+    //#region Compilation Commands
+    println!("INFO: Running `nasm` -felf64 tmp.asm");
     if !Command::new("nasm")
         .arg("-felf64")
         .arg("tmp.asm")
         .status()
-        .expect("Cannot run nasm")
+        .expect("Cannot run `nasm`")
         .success()
     {
-        eprintln!("ERROR: nasm ended with error.");
+        eprintln!("ERROR: `nasm` ended with error.");
         exit(1);
     }
-    println!("INFO: Running ld tmp.o -o {output_filepath}");
+    println!("INFO: Running `ld` tmp.o -o {output_filepath}");
     if !Command::new("ld")
         .arg("tmp.o")
         .arg("-o")
         .arg(format!("{output_filepath}"))
         .status()
-        .expect("Cannot run ld")
+        .expect("Cannot run `ld`")
         .success()
     {
-        eprintln!("ERROR: ld ended with error.");
+        eprintln!("ERROR: `ld` ended with error.");
         exit(1);
     }
-    println!("INFO: Running rm tmp.o");
+    println!("INFO: Running `rm` tmp.o");
     if !Command::new("rm")
         .arg("tmp.o")
         .status()
-        .expect("Cannot run rm")
+        .expect("Cannot run `rm`")
         .success()
     {
-        eprintln!("ERROR: rm ended with error.");
+        eprintln!("ERROR: `rm` ended with error.");
         exit(1);
     }
-    println!("SUCCESS: Compilation Succesful");
+    println!("SUCCESS: Compilation Successful");
+    //#endregion
 }
