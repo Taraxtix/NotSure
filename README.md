@@ -25,6 +25,7 @@ A statement can be one of the followed :
 
 An argument (`[arg]`) can be one of the followed :
 
+- `string_literal`
 - `char_literal`
 - `integer_literal`
 - `( [arg] )`

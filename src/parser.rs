@@ -16,12 +16,15 @@ pub struct Program {
     pub statements: Vec<Statement>,
     pub stack_pos: usize,
     pub vars: Vec<HashMap<String, usize>>,
+    pub str_literals: HashMap<String, usize>,
+    pub str_literals_size: usize,
     pub cf_id: usize,
 }
 
 #[derive(Debug, Clone)]
 pub enum Arg {
-    IntLit(i64),
+    IntLit(u64),
+    StringLit(String),
     Ident(String),
     Paren(Box<Arg>),
     BinOp(OpType, Box<Arg>, Box<Arg>),
@@ -98,6 +101,7 @@ impl Arg {
                 }
             }
             TokenType::OParen => Some(Self::parse_paren(first.clone(), tokens)),
+            TokenType::StringLit(str_lit) => Some(Self::StringLit(str_lit)),
             TokenType::Address => {
                 if let Some(Arg::Ident(name)) = Self::parse(tokens) {
                     Some(Arg::Address(name))
@@ -194,6 +198,18 @@ impl Arg {
                     format!("    lea     rax, [rsp+{}]\n", (prog.stack_pos - offset) * 8)
                         .as_bytes(),
                 )?;
+                prog.push(asm, "rax".to_string())
+            }
+            Arg::StringLit(str_lit) => {
+                let idx = if let Some(val) = prog.str_literals.get(str_lit) {
+                    val.clone()
+                } else {
+                    prog.str_literals_size += 1;
+                    prog.str_literals
+                        .insert(str_lit.clone(), prog.str_literals_size);
+                    prog.str_literals_size
+                };
+                asm.write(format!("    mov     rax, STR_{}\n", idx).as_bytes())?;
                 prog.push(asm, "rax".to_string())
             }
             Arg::BinOp(op_type, arg1, arg2) => {
@@ -504,7 +520,7 @@ impl Statement {
     fn parse_syscall(first: Token, tokens: &mut Vec<Token>) -> Self {
         let arg_nb_token = tokens.q_pop();
         if let Some(TokenType::IntLit(arg_nb)) = arg_nb_token.clone().map(|tok| tok.token_type) {
-            if (0..=6).contains(&arg_nb) {
+            if !(0..=6).contains(&arg_nb) {
                 eprintln!(
                     "ERROR: {}: Invalid number of arguments for syscall number. (Should be between 0 and 6)",
                     arg_nb_token.unwrap().loc
@@ -602,6 +618,8 @@ impl Program {
             stack_pos: 0,
             vars: vec![],
             cf_id: 0,
+            str_literals: HashMap::new(),
+            str_literals_size: 0,
         }
     }
 
@@ -694,7 +712,16 @@ _start:
         }
         asm.write("    mov     rax, 60\n".as_bytes())?;
         asm.write("    mov     rdi, 0\n".as_bytes())?;
-        asm.write("    syscall\n".as_bytes())
+        asm.write("    syscall\n\n".as_bytes())?;
+        asm.write("section .data\n".as_bytes())?;
+        for (str_lit, idx) in self.str_literals.iter() {
+            asm.write(format!("    STR_{idx} db ").as_bytes())?;
+            for byte in str_lit.as_bytes() {
+                asm.write(format!("{byte}, ").as_bytes())?;
+            }
+            asm.write("0\n".as_bytes())?;
+        }
+        Ok(0)
     }
 }
 //#endregion

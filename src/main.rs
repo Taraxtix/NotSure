@@ -9,6 +9,8 @@ use parser::{lexer::Lexer, Program};
 pub mod parser;
 //#endregion
 
+const DEBUG: bool = true;
+
 fn usage(args: Vec<String>) -> String {
     let mut usage = format!("Usage: {} <filepath> [option]\n", args.get(0).unwrap());
     usage.push_str(format!("options:\n").as_str());
@@ -20,13 +22,17 @@ fn usage(args: Vec<String>) -> String {
 
 fn main() {
     let args = args().collect::<Vec<_>>();
-    if args.len() < 2 {
+    if args.len() < 2 && !DEBUG {
         eprintln!("ERROR: Not enough argument.");
         eprintln!("{}", usage(args));
         exit(1);
     }
+    let filepath = if DEBUG {
+        "test.ns".to_string()
+    } else {
+        args.get(1).unwrap().to_string()
+    };
 
-    let filepath = args.get(1).unwrap().to_string();
     let file_content = match fs::read_to_string(filepath.clone()) {
         Ok(content) => content,
         Err(err) => {

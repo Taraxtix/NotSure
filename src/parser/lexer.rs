@@ -30,7 +30,8 @@ pub enum TokenType {
     Exit,
     OParen,
     CParen,
-    IntLit(i64),
+    IntLit(u64),
+    StringLit(String),
     Semi,
     Let,
     Ident(String),
@@ -128,6 +129,7 @@ impl Display for TokenType {
             TokenType::Syscall => "Syscall".fmt(f),
             TokenType::Comma => "Comma".fmt(f),
             TokenType::Do => "Do".fmt(f),
+            TokenType::StringLit(_) => "StringLiteral".fmt(f),
         }
     }
 }
@@ -197,7 +199,34 @@ impl<'a> Iterator for Lexer<'a> {
         }
         let start = self.cursor;
 
+        if let Some(_) = self.q_pop_if(|c| *c == '\"') {
+            //String literal
+            while let Some(c) = self.q_pop() {
+                if c == '\"' {
+                    break;
+                }
+                if c == '\n' || self.q_is_empty() {
+                    eprintln!("ERROR: {}: Unfinished char literal ", self.get_loc());
+                    exit(1);
+                }
+                self.q_pop_if(|c| *c == '\\');
+            }
+            let str_lit = self.content[start..self.cursor - 1]
+                .iter()
+                .collect::<String>()
+                .replace("\\n", "\n")
+                .replace("\\t", "\t")
+                .replace("\\r", "\r")
+                .replace("\\'", "'")
+                .replace("\\\"", "\"");
+
+            return Some(Token {
+                loc: self.get_loc(),
+                token_type: TokenType::StringLit(str_lit),
+            });
+        }
         if let Some(_) = self.q_pop_if(|c| *c == '\'') {
+            //Char literal
             while let Some(c) = self.q_peek() {
                 if *c == '\'' {
                     break;
@@ -226,28 +255,36 @@ impl<'a> Iterator for Lexer<'a> {
                 .replace("\\r", "\r")
                 .replace("\\'", "'")
                 .replace("\\\"", "\"")
-                .as_bytes()[1] as i64;
+                .as_bytes()[1] as u64;
 
-            Some(Token {
+            return Some(Token {
                 loc: self.get_loc(),
                 token_type: TokenType::IntLit(c_lit),
-            })
-        } else if let Some(_) = self.q_pop_if(|c| c.is_ascii_digit()) {
+            });
+        }
+        if let Some(_) = self.q_pop_if(|c| c.is_ascii_digit()) {
+            //Integer literal
             while let Some(_) = self.q_pop_if(|c| c.is_ascii_digit()) {}
-            Some(Token {
+            return Some(Token {
                 loc: self.get_loc(),
                 token_type: TokenType::IntLit(
                     self.content[start..self.cursor]
                         .iter()
                         .collect::<String>()
-                        .parse::<i64>()
+                        .parse::<u64>()
                         .unwrap(),
                 ),
-            })
-        } else if let Some(_) = self.q_pop_if(|c| c.is_ascii_alphabetic() || *c == '_') {
+            });
+        }
+        if let Some(_) = self.q_pop_if(|c| c.is_ascii_alphabetic() || *c == '_') {
+            //Multi-character identifier
             while let Some(_) = self.q_pop_if(|c| c.is_ascii_alphabetic() || *c == '_') {}
             let buf = self.content[start..self.cursor].iter().collect::<String>();
-            match buf.as_str() {
+            return match buf.as_str() {
+                "syscall" => Some(Token {
+                    loc: self.get_loc(),
+                    token_type: TokenType::Syscall,
+                }),
                 "exit" => Some(Token {
                     loc: self.get_loc(),
                     token_type: TokenType::Exit,
@@ -276,8 +313,10 @@ impl<'a> Iterator for Lexer<'a> {
                     loc: self.get_loc(),
                     token_type: TokenType::Ident(buf),
                 }),
-            }
-        } else {
+            };
+        }
+        {
+            //Single-character identifier
             self.q_pop();
             let buf = self.content[start..self.cursor].iter().collect::<String>();
             match buf.as_str() {
