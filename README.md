@@ -15,7 +15,7 @@ A program is a list of statements.
 
 A statement can be one of the followed :
 
-- `syscall [digit] [arg]` (Call a syscall with `[digit]` arguments not including the syscall code which go first)
+- `syscall [arg];` (Call the syscall with code being it's first argument followed by their usual arguments)
 - `{ [Statement]* }` (Create a scope within which every variable that are declared will be cleared at the end of it)
 - `[Control Flow]`
 - `dbg [arg]` (print the u64 value of `[arg]` followed by a new line)

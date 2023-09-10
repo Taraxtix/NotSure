@@ -555,37 +555,16 @@ impl Statement {
     }
 
     fn parse_syscall(first: Token, tokens: &mut Vec<Token>) -> Self {
-        let arg_nb_token = tokens.q_pop();
-        if let Some(TokenType::IntLit(arg_nb)) = arg_nb_token.clone().map(|tok| tok.token_type) {
-            if !(0..=6).contains(&arg_nb) {
-                eprintln!(
-                    "ERROR: {}: Invalid number of arguments for syscall number. (Should be between 0 and 6)",
-                    arg_nb_token.unwrap().loc
-                );
-                exit(1);
-            }
-            let mut args: Vec<Arg> = vec![];
-            for _ in 0..=arg_nb {
-                if let Some(arg) = Arg::parse(tokens) {
-                    args.push(arg);
-                } else {
-                    eprintln!("ERROR: {}: Not enough arguments for `syscall`", first.loc);
-                    exit(1);
-                }
-            }
-            if let Some(TokenType::Semi) = tokens.q_pop().map(|tok| tok.token_type) {
-                Self::Syscall(args)
-            } else {
-                eprintln!("ERROR: {}: Missing `;` after `syscall`", first.loc);
-                exit(1);
-            }
-        } else {
-            eprintln!(
-                "ERROR: {}: Expected syscall number after `syscall`",
-                first.loc
-            );
-            exit(1);
+        let mut args: Vec<Arg> = vec![];
+        while let None = tokens.q_pop_if(|tok| matches!(tok.token_type, TokenType::Semi)) {
+            args.push(Arg::parse(tokens).unwrap_or_else(|| {
+                exit_msg(format!(
+                    "ERROR: {}: Expected an argument for `{}`",
+                    first.loc, first.token_type
+                ))
+            }));
         }
+        Self::Syscall(args)
     }
 
     fn wrong_token(first: Token) -> ! {

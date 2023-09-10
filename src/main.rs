@@ -9,7 +9,7 @@ use parser::{lexer::Lexer, Program};
 pub mod parser;
 //#endregion
 
-const DEBUG: bool = true;
+const DEBUG: bool = false;
 
 fn usage(args: Vec<String>) -> String {
     let mut usage = format!("Usage: {} <filepath> [option]\n", args.get(0).unwrap());
@@ -28,7 +28,7 @@ fn main() {
         exit(1);
     }
     let filepath = if DEBUG {
-        "test.ns".to_string()
+        "examples/range100.ns".to_string()
     } else {
         args.get(1).unwrap().to_string()
     };

@@ -91,7 +91,7 @@ pub fn exit_msg(msg: String) -> ! {
 
 impl<'a> Display for Loc {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        format!("{}:{}:{}", self.filepath, self.line, self.col).fmt(f)
+        format!("{}:{}:{}", self.filepath, self.line + 1, self.col + 1).fmt(f)
     }
 }
 
@@ -201,8 +201,8 @@ impl<'a> Iterator for Lexer<'a> {
         }
         let start = self.cursor;
 
+        //String literal
         if let Some(_) = self.q_pop_if(|c| *c == '\"') {
-            //String literal
             while let Some(c) = self.q_pop() {
                 if c == '\"' {
                     break;
@@ -213,7 +213,7 @@ impl<'a> Iterator for Lexer<'a> {
                 }
                 self.q_pop_if(|c| *c == '\\');
             }
-            let str_lit = self.content[start..self.cursor - 1]
+            let str_lit = self.content[start + 1..self.cursor - 1]
                 .iter()
                 .collect::<String>()
                 .replace("\\n", "\n")
@@ -227,8 +227,8 @@ impl<'a> Iterator for Lexer<'a> {
                 token_type: TokenType::StringLit(str_lit),
             });
         }
+        //Char literal
         if let Some(_) = self.q_pop_if(|c| *c == '\'') {
-            //Char literal
             while let Some(c) = self.q_peek() {
                 if *c == '\'' {
                     break;
@@ -264,8 +264,8 @@ impl<'a> Iterator for Lexer<'a> {
                 token_type: TokenType::IntLit(c_lit),
             });
         }
+        //Integer literal
         if let Some(_) = self.q_pop_if(|c| c.is_ascii_digit()) {
-            //Integer literal
             while let Some(_) = self.q_pop_if(|c| c.is_ascii_digit()) {}
             return Some(Token {
                 loc: self.get_loc(),
@@ -278,8 +278,8 @@ impl<'a> Iterator for Lexer<'a> {
                 ),
             });
         }
+        //Multi-character identifier
         if let Some(_) = self.q_pop_if(|c| c.is_ascii_alphabetic() || *c == '_') {
-            //Multi-character identifier
             while let Some(_) = self.q_pop_if(|c| c.is_ascii_alphabetic() || *c == '_') {}
             let buf = self.content[start..self.cursor].iter().collect::<String>();
             return match buf.as_str() {
@@ -311,14 +311,18 @@ impl<'a> Iterator for Lexer<'a> {
                     loc: self.get_loc(),
                     token_type: TokenType::While,
                 }),
+                "do" => Some(Token {
+                    loc: self.get_loc(),
+                    token_type: TokenType::Do,
+                }),
                 _ => Some(Token {
                     loc: self.get_loc(),
                     token_type: TokenType::Ident(buf),
                 }),
             };
         }
+        //Single-character identifier
         {
-            //Single-character identifier
             self.q_pop();
             let buf = self.content[start..self.cursor].iter().collect::<String>();
             match buf.as_str() {

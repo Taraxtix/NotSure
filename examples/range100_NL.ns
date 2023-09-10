@@ -1,0 +1,5 @@
+let x = 0;
+while x < 100 do {
+    dbg x;
+    x = x + 1;
+}
