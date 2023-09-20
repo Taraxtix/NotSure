@@ -1,4 +1,5 @@
 //#region Imports
+use std::collections::hash_map;
 use std::{
     collections::HashMap,
     io::{Error, Write},
@@ -29,7 +30,8 @@ pub enum Arg {
     Paren(Box<Arg>),
     BinOp(OpType, Box<Arg>, Box<Arg>),
     Address(String),
-    Dereference(Box<Arg>),
+    Dereference(u8, Box<Arg>),
+    Syscall(Vec<Arg>),
 }
 
 #[derive(Debug, Clone)]
@@ -47,8 +49,8 @@ pub enum Statement {
     Scope(Vec<Statement>),
     ControlFlow(CfType),
     Dbg(Arg),
-    Syscall(Vec<Arg>),
-    DereferenceActu(Arg, Arg),
+    DereferenceActu(u8, Arg, Arg),
+    Drop(Arg),
 }
 //#endregion
 
@@ -96,7 +98,10 @@ impl Arg {
         let arg1 = match first.clone().token_type {
             TokenType::IntLit(value) => Some(Self::IntLit(value)),
             TokenType::Ident(name) => {
-                if let Some(_) = tokens.q_pop_if(|tok| matches!(tok.token_type, TokenType::Equal)) {
+                if tokens
+                    .q_pop_if(|tok| matches!(tok.token_type, TokenType::Equal))
+                    .is_some()
+                {
                     Self::wrong_token(first)
                 } else {
                     Some(Self::Ident(name))
@@ -104,7 +109,7 @@ impl Arg {
             }
             TokenType::OParen => Some(Self::parse_paren(first.clone(), tokens)),
             TokenType::StringLit(str_lit) => Some(Self::StringLit(str_lit)),
-            TokenType::Dereference => Some(Self::Dereference(Box::new(Self::parse(tokens)?))),
+            TokenType::Dereference(size) => Some(Self::parse_deref(first.clone(), tokens, size)),
             TokenType::Address => {
                 if let Some(Arg::Ident(name)) = Self::parse(tokens) {
                     Some(Arg::Address(name))
@@ -116,6 +121,7 @@ impl Arg {
                     exit(1);
                 }
             }
+            TokenType::Syscall => Some(Self::parse_syscall(first.clone(), tokens)),
             _ => Self::wrong_token(first),
         };
         if let Some(TokenType::BinOp(op_type)) = tokens
@@ -131,6 +137,20 @@ impl Arg {
         } else {
             arg1
         }
+    }
+
+    fn parse_deref(first: Token, tokens: &mut Vec<Token>, size: u8) -> Self {
+        tokens
+            .q_pop_if(|tok| matches!(tok.token_type, TokenType::OParen))
+            .unwrap_or_else(|| exit_msg(format!("ERROR: expected open paren after {}", first.loc)));
+        let arg = Self::parse(tokens)
+            .unwrap_or_else(|| exit_msg(format!("ERROR: expected arg after {}", first.loc)));
+        tokens
+            .q_pop_if(|tok| matches!(tok.token_type, TokenType::CParen))
+            .unwrap_or_else(|| {
+                exit_msg(format!("ERROR: expected close paren after {}", first.loc))
+            });
+        Self::Dereference(size, Box::new(arg))
     }
 
     fn parse_paren(first: Token, tokens: &mut Vec<Token>) -> Self {
@@ -161,19 +181,17 @@ impl Arg {
                     ),
                     _ => Arg::BinOp(op_type, Box::new(arg1), Box::new(arg2)),
                 }
-            } else {
-                if let Arg::BinOp(op_type_2, arg2_1, arg2_2) = arg2.clone() {
-                    match op_type {
-                        OpType::Times | OpType::Divide => Arg::BinOp(
-                            op_type_2,
-                            Box::new(Arg::BinOp(op_type, Box::new(arg1), arg2_1)),
-                            arg2_2,
-                        ),
-                        _ => Arg::BinOp(op_type, Box::new(arg1), Box::new(arg2)),
-                    }
-                } else {
-                    Arg::BinOp(op_type, Box::new(arg1), Box::new(arg2))
+            } else if let Arg::BinOp(op_type_2, arg2_1, arg2_2) = arg2.clone() {
+                match op_type {
+                    OpType::Times | OpType::Divide => Arg::BinOp(
+                        op_type_2,
+                        Box::new(Arg::BinOp(op_type, Box::new(arg1), arg2_1)),
+                        arg2_2,
+                    ),
+                    _ => Arg::BinOp(op_type, Box::new(arg1), Box::new(arg2)),
                 }
+            } else {
+                Arg::BinOp(op_type, Box::new(arg1), Box::new(arg2))
             }
         } else {
             eprintln!(
@@ -184,108 +202,191 @@ impl Arg {
         }
     }
 
+    fn parse_syscall(first: Token, tokens: &mut Vec<Token>) -> Self {
+        if tokens
+            .q_pop_if(|tok| matches!(tok.token_type, TokenType::OParen))
+            .is_none()
+        {
+            exit_msg(format!(
+                "ERROR: {}: Expected open parenthesis after {}",
+                first.loc, first.token_type
+            ))
+        }
+        let mut args: Vec<Arg> = vec![];
+        while tokens
+            .q_pop_if(|tok| matches!(tok.token_type, TokenType::CParen))
+            .is_none()
+        {
+            args.push(Self::parse(tokens).unwrap_or_else(|| {
+                exit_msg(format!(
+                    "ERROR: {}: Expected an argument for `{}`",
+                    first.loc, first.token_type
+                ))
+            }));
+        }
+        Self::Syscall(args)
+    }
+
     fn compile(&self, asm: &mut dyn Write, prog: &mut Program) -> Result<usize, Error> {
         match self {
-            Arg::IntLit(value) => prog.push(asm, format!("{value}")),
-            Arg::Paren(arg) => arg.compile(asm, prog),
-            Arg::Ident(name) => {
+            Self::IntLit(value) => prog.push(asm, format!("{value}")),
+            Self::Paren(arg) => arg.compile(asm, prog),
+            Self::Ident(name) => {
                 let offset = prog.find_var(name.to_string());
+                let _ = asm.write(format!(";; Ident {name}\n").as_bytes())?;
                 prog.push(
                     asm,
                     format!("QWORD [rsp+{}]", (prog.stack_pos - offset) * 8),
                 )
             }
-            Arg::Address(name) => {
+            Self::Address(name) => {
                 let offset = prog.find_var(name.to_string());
-                asm.write(
+                let _ = asm.write(";; Address\n".as_bytes())?;
+                let _ = asm.write(
                     format!("    lea     rax, [rsp+{}]\n", (prog.stack_pos - offset) * 8)
                         .as_bytes(),
                 )?;
                 prog.push(asm, "rax".to_string())
             }
-            Arg::StringLit(str_lit) => {
+            Self::StringLit(str_lit) => {
                 let idx = if let Some(val) = prog.str_literals.get(str_lit) {
-                    val.clone()
+                    *val
                 } else {
                     prog.str_literals_size += 1;
                     prog.str_literals
                         .insert(str_lit.clone(), prog.str_literals_size);
                     prog.str_literals_size
                 };
-                asm.write(format!("    mov     rax, STR_{}\n", idx).as_bytes())?;
+                let _ = asm.write(";; StringLit\n".as_bytes())?;
+                let _ = asm.write(format!("    mov     rax, STR_{}\n", idx).as_bytes())?;
                 prog.push(asm, "rax".to_string())
             }
-            Arg::BinOp(op_type, arg1, arg2) => {
+            Self::BinOp(op_type, arg1, arg2) => {
+                let _ = asm.write(";; BinOp\n".as_bytes())?;
                 arg2.compile(asm, prog)?;
                 arg1.compile(asm, prog)?;
                 prog.pop(asm, "rax".to_string())?;
                 prog.pop(asm, "rbx".to_string())?;
                 match op_type {
-                    OpType::Times => asm.write("    mul     rbx\n".as_bytes())?,
+                    OpType::Times => {
+                        let _ = asm.write(";; Times\n".as_bytes())?;
+                        asm.write("    mul     rbx\n".as_bytes())?
+                    }
                     OpType::Divide => {
-                        asm.write("    mov     rdx, 0\n".as_bytes())?;
+                        let _ = asm.write(";; Divide\n".as_bytes())?;
+                        let _ = asm.write("    mov     rdx, 0\n".as_bytes())?;
                         asm.write("    div     rbx\n".as_bytes())?
                     }
                     OpType::Modulo => {
-                        asm.write("    mov     rdx, 0\n".as_bytes())?;
-                        asm.write("    div     rbx\n".as_bytes())?;
+                        let _ = asm.write(";; Modulo\n".as_bytes())?;
+                        let _ = asm.write("    mov     rdx, 0\n".as_bytes())?;
+                        let _ = asm.write("    div     rbx\n".as_bytes())?;
                         asm.write("    mov     rax, rdx\n".as_bytes())?
                     }
-                    OpType::BitwiseOr => asm.write("    or      rax, rbx\n".as_bytes())?,
-                    OpType::BitwiseAnd => asm.write("    and     rax, rbx\n".as_bytes())?,
-                    OpType::Plus => asm.write("    add     rax, rbx\n".as_bytes())?,
-                    OpType::Minus => asm.write("    sub     rax, rbx\n".as_bytes())?,
+                    OpType::BitwiseOr => {
+                        let _ = asm.write(";; BitwiseOr\n".as_bytes())?;
+                        asm.write("    or      rax, rbx\n".as_bytes())?
+                    }
+                    OpType::BitwiseAnd => {
+                        let _ = asm.write(";; BitwiseAnd\n".as_bytes())?;
+                        asm.write("    and     rax, rbx\n".as_bytes())?
+                    }
+                    OpType::Plus => {
+                        let _ = asm.write(";; Plus\n".as_bytes())?;
+                        asm.write("    add     rax, rbx\n".as_bytes())?
+                    }
+                    OpType::Minus => {
+                        let _ = asm.write(";; Minus\n".as_bytes())?;
+                        asm.write("    sub     rax, rbx\n".as_bytes())?
+                    }
                     OpType::Equal => {
-                        asm.write("    mov     rcx, 1\n".as_bytes())?;
-                        asm.write("    cmp     rax, rbx\n".as_bytes())?;
-                        asm.write("    mov     rax, 0\n".as_bytes())?;
+                        let _ = asm.write(";; Equal\n".as_bytes())?;
+                        let _ = asm.write("    mov     rcx, 1\n".as_bytes())?;
+                        let _ = asm.write("    cmp     rax, rbx\n".as_bytes())?;
+                        let _ = asm.write("    mov     rax, 0\n".as_bytes())?;
                         asm.write("    cmove   rax, rcx\n".as_bytes())?
                     }
                     OpType::Greater => {
-                        asm.write("    mov     rcx, 1\n".as_bytes())?;
-                        asm.write("    cmp     rax, rbx\n".as_bytes())?;
-                        asm.write("    mov     rax, 0\n".as_bytes())?;
+                        let _ = asm.write(";; Greater\n".as_bytes())?;
+                        let _ = asm.write("    mov     rcx, 1\n".as_bytes())?;
+                        let _ = asm.write("    cmp     rax, rbx\n".as_bytes())?;
+                        let _ = asm.write("    mov     rax, 0\n".as_bytes())?;
                         asm.write("    cmovg   rax, rcx\n".as_bytes())?
                     }
                     OpType::Less => {
-                        asm.write("    mov     rcx, 1\n".as_bytes())?;
-                        asm.write("    cmp     rax, rbx\n".as_bytes())?;
-                        asm.write("    mov     rax, 0\n".as_bytes())?;
+                        let _ = asm.write(";; Less\n".as_bytes())?;
+                        let _ = asm.write("    mov     rcx, 1\n".as_bytes())?;
+                        let _ = asm.write("    cmp     rax, rbx\n".as_bytes())?;
+                        let _ = asm.write("    mov     rax, 0\n".as_bytes())?;
                         asm.write("    cmovl   rax, rcx\n".as_bytes())?
                     }
                     OpType::GreaterEqual => {
-                        asm.write("    mov     rcx, 1\n".as_bytes())?;
-                        asm.write("    cmp     rax, rbx\n".as_bytes())?;
-                        asm.write("    mov     rax, 0\n".as_bytes())?;
+                        let _ = asm.write(";; GreaterEqual\n".as_bytes())?;
+                        let _ = asm.write("    mov     rcx, 1\n".as_bytes())?;
+                        let _ = asm.write("    cmp     rax, rbx\n".as_bytes())?;
+                        let _ = asm.write("    mov     rax, 0\n".as_bytes())?;
                         asm.write("    cmovge  rax, rcx\n".as_bytes())?
                     }
                     OpType::LessEqual => {
-                        asm.write("    mov     rcx, 1\n".as_bytes())?;
-                        asm.write("    cmp     rax, rbx\n".as_bytes())?;
-                        asm.write("    mov     rax, 0\n".as_bytes())?;
+                        let _ = asm.write(";; LessEqual\n".as_bytes())?;
+                        let _ = asm.write("    mov     rcx, 1\n".as_bytes())?;
+                        let _ = asm.write("    cmp     rax, rbx\n".as_bytes())?;
+                        let _ = asm.write("    mov     rax, 0\n".as_bytes())?;
                         asm.write("    cmovle  rax, rcx\n".as_bytes())?
                     }
                     OpType::LogicalAnd => {
-                        asm.write("    mov     rcx, 0\n".as_bytes())?;
-                        asm.write("    and     rax, rbx\n".as_bytes())?;
-                        asm.write("    test    rax, rax\n".as_bytes())?;
-                        asm.write("    mov     rax, 1\n".as_bytes())?;
+                        let _ = asm.write(";; Logical AND\n".as_bytes())?;
+                        let _ = asm.write("    mov     rcx, 0\n".as_bytes())?;
+                        let _ = asm.write("    and     rax, rbx\n".as_bytes())?;
+                        let _ = asm.write("    test    rax, rax\n".as_bytes())?;
+                        let _ = asm.write("    mov     rax, 1\n".as_bytes())?;
                         asm.write("    cmove   rax, rcx\n".as_bytes())?
                     }
                     OpType::LogicalOr => {
-                        asm.write("    mov     rcx, 0\n".as_bytes())?;
-                        asm.write("    or      rax, rbx\n".as_bytes())?;
-                        asm.write("    test    rax, rax\n".as_bytes())?;
-                        asm.write("    mov     rax, 1\n".as_bytes())?;
+                        let _ = asm.write(";; Logical OR\n".as_bytes())?;
+                        let _ = asm.write("    mov     rcx, 0\n".as_bytes())?;
+                        let _ = asm.write("    or      rax, rbx\n".as_bytes())?;
+                        let _ = asm.write("    test    rax, rax\n".as_bytes())?;
+                        let _ = asm.write("    mov     rax, 1\n".as_bytes())?;
                         asm.write("    cmove   rax, rcx\n".as_bytes())?
+                    }
+                    OpType::LShift => {
+                        let _ = asm.write(";; LSHIFT\n".as_bytes())?;
+                        let _ = asm.write("    mov     cl, bl\n".as_bytes())?;
+                        asm.write("    shl     rax, cl\n".as_bytes())?
+                    }
+                    OpType::RShift => {
+                        let _ = asm.write(";; RSHIFT\n".as_bytes())?;
+                        let _ = asm.write("    mov     cl, bl\n".as_bytes())?;
+                        asm.write("    shr     rax, cl\n".as_bytes())?
                     }
                 };
                 prog.push(asm, "rax".to_string())
             }
-            Arg::Dereference(address) => {
+            Self::Dereference(size, address) => {
+                let _ = asm.write(";; Dereference(ARG)\n".as_bytes())?;
                 address.compile(asm, prog)?;
                 prog.pop(asm, "rbx".to_string())?;
-                asm.write("    mov     rax, QWORD [rbx]\n".as_bytes())?;
+                let _ = asm.write("    xor     rax, rax\n".as_bytes())?;
+                match size {
+                    64 => asm.write("    mov     rax, QWORD [rbx]\n".as_bytes()),
+                    32 => asm.write("    mov     eax, DWORD [rbx]\n".as_bytes()),
+                    16 => asm.write("    mov     ax, WORD [rbx]\n".as_bytes()),
+                    8 => asm.write("    mov     al, BYTE [rbx]\n".as_bytes()),
+                    _ => unreachable!(),
+                }?;
+                prog.push(asm, "rax".to_string())
+            }
+            Self::Syscall(args) => {
+                let _ = asm.write(";; Syscall\n".as_bytes())?;
+                let regs: [&str; 7] = ["rax", "rdi", "rsi", "rdx", "r10", "r8", "r9"];
+                for idx in 0..args.len() {
+                    args.get(idx).unwrap().compile(asm, prog)?;
+                }
+                for idx in (0..args.len()).rev() {
+                    prog.pop(asm, regs[idx].to_string())?;
+                }
+                let _ = asm.write("    syscall\n".as_bytes())?;
                 prog.push(asm, "rax".to_string())
             }
         }
@@ -301,7 +402,10 @@ impl CfType {
             ));
         }));
 
-        if let None = tokens.q_pop_if(|tok| matches!(tok.token_type, TokenType::Do)) {
+        if tokens
+            .q_pop_if(|tok| matches!(tok.token_type, TokenType::Do))
+            .is_none()
+        {
             exit_msg(format!(
                 "{} Expected do after `{}`",
                 first.loc, first.token_type
@@ -320,7 +424,10 @@ impl CfType {
             return Self::While(cf_arg, cf_statement);
         }
 
-        if let Some(TokenType::Else) = tokens.q_pop().map(|tok| tok.clone().token_type) {
+        if tokens
+            .q_pop_if(|tok| matches!(tok.token_type, TokenType::Else))
+            .is_some()
+        {
             return Self::IfElse(
                 cf_arg,
                 cf_statement,
@@ -343,31 +450,31 @@ impl CfType {
             CfType::If(arg, scope) => {
                 arg.compile(asm, prog)?;
                 prog.pop(asm, "rax".to_string())?;
-                asm.write("    test    rax, rax\n".as_bytes())?;
-                asm.write(format!("    je      END_{cf_id}\n").as_bytes())?;
+                let _ = asm.write("    test    rax, rax\n".as_bytes())?;
+                let _ = asm.write(format!("    je      END_{cf_id}\n").as_bytes())?;
                 scope.compile(asm, prog)?;
                 asm.write(format!("END_{cf_id}:\n").as_bytes())
             }
             CfType::IfElse(arg, main_scope, else_scope) => {
-                asm.write(format!("START_{cf_id}:\n").as_bytes())?;
+                let _ = asm.write(format!("START_{cf_id}:\n").as_bytes())?;
                 arg.compile(asm, prog)?;
                 prog.pop(asm, "rax".to_string())?;
-                asm.write("    test    rax, rax\n".as_bytes())?;
-                asm.write(format!("    je      ELSE_{cf_id}\n").as_bytes())?;
+                let _ = asm.write("    test    rax, rax\n".as_bytes())?;
+                let _ = asm.write(format!("    je      ELSE_{cf_id}\n").as_bytes())?;
                 main_scope.compile(asm, prog)?;
-                asm.write(format!("    jmp     END_{cf_id}\n").as_bytes())?;
-                asm.write(format!("ELSE_{cf_id}:\n").as_bytes())?;
+                let _ = asm.write(format!("    jmp     END_{cf_id}\n").as_bytes())?;
+                let _ = asm.write(format!("ELSE_{cf_id}:\n").as_bytes())?;
                 else_scope.compile(asm, prog)?;
                 asm.write(format!("END_{cf_id}:\n").as_bytes())
             }
             CfType::While(arg, scope) => {
-                asm.write(format!("START_{cf_id}:\n").as_bytes())?;
+                let _ = asm.write(format!("START_{cf_id}:\n").as_bytes())?;
                 arg.compile(asm, prog)?;
                 prog.pop(asm, "rax".to_string())?;
-                asm.write("    test    rax, rax\n".as_bytes())?;
-                asm.write(format!("    je      END_{cf_id}\n").as_bytes())?;
+                let _ = asm.write("    test    rax, rax\n".as_bytes())?;
+                let _ = asm.write(format!("    je      END_{cf_id}\n").as_bytes())?;
                 scope.compile(asm, prog)?;
-                asm.write(format!("    jmp     START_{cf_id}\n").as_bytes())?;
+                let _ = asm.write(format!("    jmp     START_{cf_id}\n").as_bytes())?;
                 asm.write(format!("END_{cf_id}:\n").as_bytes())
             }
         }
@@ -398,9 +505,13 @@ impl Statement {
 
             TokenType::Dbg => Some(Self::parse_dbg(first.clone(), tokens)),
 
-            TokenType::Syscall => Some(Self::parse_syscall(first, tokens)),
-            TokenType::Dereference => Some(Self::parse_dereference_actu(first, tokens)),
-            _ => Self::wrong_token(first),
+            TokenType::Dereference(_) => Some(Self::parse_dereference_actu(first, tokens)),
+
+            _ => {
+                tokens.push(first.clone());
+                tokens.rotate_right(1);
+                Some(Self::parse_drop(first, tokens))
+            }
         }
     }
 
@@ -411,7 +522,10 @@ impl Statement {
                 first.loc, first.token_type
             ))
         });
-        if let None = tokens.q_pop_if(|tok| matches!(tok.token_type, TokenType::Equal)) {
+        if tokens
+            .q_pop_if(|tok| matches!(tok.token_type, TokenType::Equal))
+            .is_none()
+        {
             exit_msg(format!(
                 "{} Expected an equal sign after `{}`",
                 first.loc, first.token_type
@@ -423,13 +537,35 @@ impl Statement {
                 first.loc, first.token_type
             ))
         });
-        if let None = tokens.q_pop_if(|tok| matches!(tok.token_type, TokenType::Semi)) {
+        if tokens
+            .q_pop_if(|tok| matches!(tok.token_type, TokenType::Semi))
+            .is_none()
+        {
             exit_msg(format!(
                 "{} Expected a semicolon after `{}`",
                 first.loc, first.token_type
             ))
         }
-        Self::DereferenceActu(address, value)
+        let size = match first.token_type {
+            TokenType::Dereference(size) => size,
+            _ => unreachable!(),
+        };
+        Self::DereferenceActu(size, address, value)
+    }
+
+    fn parse_drop(first: Token, tokens: &mut Vec<Token>) -> Self {
+        let arg = Arg::parse(tokens)
+            .unwrap_or_else(|| exit_msg(format!("{} Expected an argument.", first.loc)));
+        if tokens
+            .q_pop_if(|tok| matches!(tok.token_type, TokenType::Semi))
+            .is_none()
+        {
+            exit_msg(format!(
+                "{} Expected a semicolon after drop statement.",
+                first.loc
+            ))
+        }
+        Self::Drop(arg)
     }
 
     fn parse_scope(open: Token, tokens: &mut Vec<Token>) -> Self {
@@ -454,117 +590,91 @@ impl Statement {
     }
 
     fn parse_exit(first: Token, tokens: &mut Vec<Token>) -> Self {
-        if let Some(arg) = Arg::parse(tokens) {
-            if let Some(TokenType::Semi) = tokens.q_pop().map(|tok| tok.token_type) {
-                Self::Exit(arg)
-            } else {
-                eprintln!("ERROR: {}: Missing Semicolon", first.loc);
-                exit(1)
-            }
-        } else {
-            eprintln!(
+        let arg = Arg::parse(tokens).unwrap_or_else(|| {
+            exit_msg(format!(
                 "ERROR: {}: Expected an arg after {}",
                 first.loc, first.token_type
-            );
-            exit(1)
+            ))
+        });
+        if tokens
+            .q_pop_if(|tok| matches!(tok.token_type, TokenType::Semi))
+            .is_none()
+        {
+            exit_msg(format!("ERROR: {}: Missing Semicolon", first.loc))
         }
+        Self::Exit(arg)
     }
 
     fn parse_dbg(first: Token, tokens: &mut Vec<Token>) -> Self {
-        if let Some(arg) = Arg::parse(tokens) {
-            if let Some(TokenType::Semi) = tokens.q_pop().map(|tok| tok.token_type) {
-                Self::Dbg(arg)
-            } else {
-                eprintln!("ERROR: {}: Missing Semicolon", first.loc);
-                exit(1)
-            }
-        } else {
-            eprintln!(
+        let arg = Arg::parse(tokens).unwrap_or_else(|| {
+            exit_msg(format!(
                 "ERROR: {}: Expected an arg after {}",
                 first.loc, first.token_type
-            );
-            exit(1)
+            ))
+        });
+        if tokens
+            .q_pop_if(|tok| matches!(tok.token_type, TokenType::Semi))
+            .is_none()
+        {
+            exit_msg(format!("ERROR: {}: Missing Semicolon", first.loc))
         }
+        Self::Dbg(arg)
     }
 
     fn parse_var_decla(first: Token, tokens: &mut Vec<Token>) -> Self {
-        let ident = tokens.q_pop();
-        if let Some(TokenType::Ident(name)) = ident.clone().map(|tok| tok.token_type) {
-            let eq = tokens.q_pop();
-            if let Some(TokenType::Equal) = eq.clone().map(|tok| tok.token_type) {
-                if let Some(arg) = Arg::parse(tokens) {
-                    let semi = tokens.q_pop();
-                    if let Some(TokenType::Semi) = semi.clone().map(|tok| tok.token_type) {
-                        Self::VarDecla(name, arg)
-                    } else {
-                        let bak = Token {
-                            loc: eq.clone().unwrap().loc,
-                            token_type: eq.clone().unwrap().token_type,
-                        };
-                        eprintln!(
-                            "ERROR: {}: Expected `;` after statement. Got: {}",
-                            semi.clone().unwrap_or(bak.clone()).loc,
-                            semi.unwrap_or(bak).token_type
-                        );
-                        exit(1);
-                    }
-                } else {
-                    eprintln!("ERROR: {}: Expected an arg after `=`", first.loc);
-                    exit(1)
-                }
-            } else {
-                let bak = Token {
-                    loc: ident.clone().unwrap().loc,
-                    token_type: ident.clone().unwrap().token_type,
-                };
-                eprintln!(
-                    "ERROR: {}: Expected `=` after identifier. Got: {}",
-                    eq.clone().unwrap_or(bak.clone()).loc,
-                    eq.clone().unwrap_or(bak.clone()).token_type
-                );
-                exit(1);
-            }
+        let (ident, name) = if let Some(TokenType::Ident(name)) =
+            tokens.q_peek().map(|tok| tok.clone().token_type)
+        {
+            (tokens.q_pop().unwrap(), name.to_string())
         } else {
-            eprintln!(
-                "ERROR: {}: Expected identifier after `let`. Got: {}",
-                ident.clone().unwrap_or(first.clone()).loc,
-                ident.clone().unwrap_or(first.clone()).token_type
-            );
-            exit(1);
+            exit_msg(format!(
+                "ERROR: {}: Expected identifier after `let`.",
+                first.clone().loc,
+            ))
+        };
+
+        if tokens
+            .q_pop_if(|tok| matches!(tok.token_type, TokenType::Equal))
+            .is_none()
+        {
+            exit_msg(format!(
+                "ERROR: {}: Expected `=` after identifier.",
+                ident.loc
+            ))
         }
+        let arg = Arg::parse(tokens).unwrap_or_else(|| {
+            exit_msg(format!("ERROR: {}: Expected an arg after `=`", first.loc))
+        });
+        if tokens
+            .q_pop_if(|tok| matches!(tok.token_type, TokenType::Semi))
+            .is_none()
+        {
+            exit_msg(format!(
+                "ERROR: {}: Expected `;` after statement.",
+                first.loc
+            ))
+        }
+        Self::VarDecla(name, arg)
     }
 
     fn parse_var_actu(first: Token, tokens: &mut Vec<Token>, name: String) -> Self {
         tokens.q_pop();
-        if let Some(arg) = Arg::parse(tokens) {
-            let last = tokens.q_pop();
-            if let Some(TokenType::Semi) = last.clone().map(|tok| tok.token_type) {
-                Self::VarActu(name, arg)
-            } else {
-                eprintln!(
-                    "ERROR: {}: Expected `;` after statement. Got: {}.",
-                    last.clone().unwrap_or(first.clone()).loc,
-                    last.clone().unwrap_or(first.clone()).token_type
-                );
-                exit(1);
-            }
-        } else {
-            eprintln!("ERROR: {}: Expected statement after `=`", first.loc);
-            exit(1);
+        let arg = Arg::parse(tokens).unwrap_or_else(|| {
+            exit_msg(format!(
+                "ERROR: {}: Expected statement after `=`",
+                first.loc
+            ))
+        });
+        if tokens
+            .q_pop_if(|tok| matches!(tok.token_type, TokenType::Semi))
+            .is_none()
+        {
+            exit_msg(format!(
+                "ERROR: {}: Expected `;` after statement.",
+                first.clone().loc
+            ))
         }
-    }
-
-    fn parse_syscall(first: Token, tokens: &mut Vec<Token>) -> Self {
-        let mut args: Vec<Arg> = vec![];
-        while let None = tokens.q_pop_if(|tok| matches!(tok.token_type, TokenType::Semi)) {
-            args.push(Arg::parse(tokens).unwrap_or_else(|| {
-                exit_msg(format!(
-                    "ERROR: {}: Expected an argument for `{}`",
-                    first.loc, first.token_type
-                ))
-            }));
-        }
-        Self::Syscall(args)
+        Self::VarActu(name, arg)
     }
 
     fn wrong_token(first: Token) -> ! {
@@ -576,17 +686,20 @@ impl Statement {
 
     fn compile(&self, asm: &mut dyn Write, prog: &mut Program) -> Result<usize, Error> {
         match self {
-            Statement::Exit(statement) => {
-                statement.compile(asm, prog)?;
-                asm.write("    mov     rax, 60\n".as_bytes())?;
+            Statement::Exit(arg) => {
+                let _ = asm.write(";; Exit\n".as_bytes())?;
+                arg.compile(asm, prog)?;
+                let _ = asm.write("    mov     rax, 60\n".as_bytes())?;
                 prog.pop(asm, "rdi".to_string())?;
                 asm.write("    syscall\n".as_bytes())
             }
             Statement::VarDecla(name, statement) => {
+                let _ = asm.write(format!(";; VarDecla {name}\n").as_bytes())?;
                 prog.create_var(name.to_string());
                 statement.compile(asm, prog)
             }
             Statement::VarActu(name, statement) => {
+                let _ = asm.write(format!(";; VarActu {name}\n").as_bytes())?;
                 let offset = prog.find_var(name.to_string());
                 statement.compile(asm, prog)?;
                 prog.pop(asm, "rax".to_string())?;
@@ -607,24 +720,29 @@ impl Statement {
             }
             Statement::ControlFlow(cf) => cf.compile(asm, prog),
             Statement::Dbg(arg) => {
+                let _ = asm.write(";; DBG\n".as_bytes())?;
                 arg.compile(asm, prog)?;
                 prog.pop(asm, "rdi".to_string())?;
                 asm.write("    call    dbg\n".as_bytes())
             }
-            Statement::Syscall(args) => {
-                let regs: [&str; 7] = ["rax", "rdi", "rsi", "rdx", "r10", "r8", "r9"];
-                for idx in 0..args.len() {
-                    args.get(idx).unwrap().compile(asm, prog)?;
-                    prog.pop(asm, regs[idx].to_string())?;
-                }
-                asm.write("    syscall\n".as_bytes())
-            }
-            Statement::DereferenceActu(address, value) => {
+            Statement::DereferenceActu(size, address, value) => {
+                let _ = asm.write(";; Dereference(STATEMENT)\n".as_bytes())?;
                 address.compile(asm, prog)?;
                 value.compile(asm, prog)?;
                 prog.pop(asm, "rbx".to_string())?;
                 prog.pop(asm, "rax".to_string())?;
-                asm.write("    mov     QWORD [rax], rbx\n".as_bytes())
+                match size {
+                    64 => asm.write("    mov     QWORD [rax], rbx\n".as_bytes()),
+                    32 => asm.write("    mov     DWORD [rax], ebx\n".as_bytes()),
+                    16 => asm.write("    mov     WORD [rax], bx\n".as_bytes()),
+                    8 => asm.write("    mov     BYTE [rax], bl\n".as_bytes()),
+                    _ => unreachable!(),
+                }
+            }
+            Statement::Drop(arg) => {
+                arg.compile(asm, prog)?;
+                let _ = asm.write(";; DROP\n".as_bytes())?;
+                prog.pop(asm, "rax".to_string())
             }
         }
     }
@@ -670,11 +788,11 @@ impl Program {
 
     pub fn create_var(&mut self, name: String) {
         let local_vars = self.vars.last_mut().unwrap();
-        if local_vars.contains_key(&name) {
+        if let hash_map::Entry::Vacant(e) = local_vars.entry(name.clone()) {
+            e.insert(self.stack_pos + 1);
+        } else {
             eprintln!("ERROR: Variable {name} is already define in the current scope");
             exit(1);
-        } else {
-            local_vars.insert(name, self.stack_pos + 1);
         }
     }
 
@@ -690,7 +808,7 @@ impl Program {
     }
 
     pub fn compile(&mut self, asm: &mut dyn Write) -> Result<usize, Error> {
-        asm.write(
+        let _ = asm.write(
             "global _start
 
 section .text
@@ -733,16 +851,16 @@ _start:
         for statement in self.clone().statements {
             statement.compile(asm, self)?;
         }
-        asm.write("    mov     rax, 60\n".as_bytes())?;
-        asm.write("    mov     rdi, 0\n".as_bytes())?;
-        asm.write("    syscall\n\n".as_bytes())?;
-        asm.write("section .data\n".as_bytes())?;
+        let _ = asm.write("    mov     rax, 60\n".as_bytes())?;
+        let _ = asm.write("    mov     rdi, 0\n".as_bytes())?;
+        let _ = asm.write("    syscall\n\n".as_bytes())?;
+        let _ = asm.write("section .data\n".as_bytes())?;
         for (str_lit, idx) in self.str_literals.iter() {
-            asm.write(format!("    STR_{idx} db ").as_bytes())?;
+            let _ = asm.write(format!("    STR_{idx} db ").as_bytes())?;
             for byte in str_lit.as_bytes() {
-                asm.write(format!("{byte}, ").as_bytes())?;
+                let _ = asm.write(format!("{byte}, ").as_bytes())?;
             }
-            asm.write("0\n".as_bytes())?;
+            let _ = asm.write("0\n".as_bytes())?;
         }
         Ok(0)
     }

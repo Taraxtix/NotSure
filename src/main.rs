@@ -10,6 +10,7 @@ pub mod parser;
 //#endregion
 
 const DEBUG: bool = false;
+const DEBUG_FILENAME: &str = "examples/helloworld.ns";
 
 fn usage(args: Vec<String>) -> String {
     let mut usage = format!("Usage: {} <filepath> [option]\n", args.get(0).unwrap());
@@ -28,7 +29,7 @@ fn main() {
         exit(1);
     }
     let filepath = if DEBUG {
-        "examples/range100.ns".to_string()
+        DEBUG_FILENAME.to_string()
     } else {
         args.get(1).unwrap().to_string()
     };

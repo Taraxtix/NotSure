@@ -5,3 +5,4 @@ test.ns
 *.asm
 **/.vscode
 src/parser.log
+**/.idea

@@ -5,8 +5,8 @@ A C-like programming language made for learning purpose
 ## Task
 
 - [X] Compiled
+- [X] Turing Complete (See `examples/rule110.ns`)
 - [ ] Statically typed
-- [ ] Turing Complete
 - [ ] Self Hosted
 
 ## Documentation
@@ -15,14 +15,13 @@ A program is a list of statements.
 
 A statement can be one of the followed :
 
-- `syscall [arg];` (Call the syscall with code being it's first argument followed by their usual arguments)
 - `{ [Statement]* }` (Create a scope within which every variable that are declared will be cleared at the end of it)
 - `[Control Flow]`
 - `dbg [arg]` (print the u64 value of `[arg]` followed by a new line)
 - `exit [arg];` (Exit the program with `[arg]` as an exit code)
 - `let identifier = [arg];` (Declare the variable `identifier` and initialize it with `[arg]`)
 - `identifier = [arg];` (Changes the value of `identifier` to `[arg]`)
-- `*:[arg] = [arg];` (Change the value at the address)
+- `*[size]:([arg]) = [arg];` (Change the value at the address)
 
 An argument (`[arg]`) can be one of the followed :
 
@@ -30,10 +29,11 @@ An argument (`[arg]`) can be one of the followed :
 - `char_literal`
 - `integer_literal`
 - `( [arg] )`
-- `[arg] [bin_op] [arg]`
 - `identifier` (The value stored by `identifier`)
 - `&:identifier` (The address where `identifier` is stored)
-- `*:[arg]` (The value stored at the address `[arg]`)
+- `*[size]:[arg]` (The value stored at the address `[arg]`)
+- `syscall [arg]` (Call the syscall with code being it's first argument followed by their usual arguments)
+- `[arg] [bin_op] [arg]` (Depends on the case: See the `[bin_op]` section)
 
 The binary operators (`[bin_op]`) that are currently supported are:
 

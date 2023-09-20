@@ -47,7 +47,7 @@ pub enum TokenType {
     Dbg,
     Syscall,
     Comma,
-    Dereference,
+    Dereference(u8),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -66,6 +66,8 @@ pub enum OpType {
     LessEqual,
     LogicalAnd,
     LogicalOr,
+    LShift,
+    RShift,
 }
 
 #[derive(Debug, Clone)]
@@ -89,9 +91,9 @@ pub fn exit_msg(msg: String) -> ! {
     exit(1);
 }
 
-impl<'a> Display for Loc {
+impl Display for Loc {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        format!("{}:{}:{}", self.filepath, self.line + 1, self.col + 1).fmt(f)
+        format!("{}:{}:{}", self.filepath, self.line + 1, self.col).fmt(f)
     }
 }
 
@@ -120,6 +122,8 @@ impl Display for TokenType {
             TokenType::BinOp(OpType::LessEqual) => "LessEqual".fmt(f),
             TokenType::BinOp(OpType::LogicalAnd) => "LogicalAnd".fmt(f),
             TokenType::BinOp(OpType::LogicalOr) => "Minus".fmt(f),
+            TokenType::BinOp(OpType::LShift) => "LShift".fmt(f),
+            TokenType::BinOp(OpType::RShift) => "RShift".fmt(f),
             TokenType::Address => "Address".fmt(f),
             TokenType::OCurly => "OpenCurlyBraces".fmt(f),
             TokenType::CCurly => "CloseCurlyBraces".fmt(f),
@@ -131,7 +135,7 @@ impl Display for TokenType {
             TokenType::Comma => "Comma".fmt(f),
             TokenType::Do => "Do".fmt(f),
             TokenType::StringLit(_) => "StringLiteral".fmt(f),
-            TokenType::Dereference => "Dereference".fmt(f),
+            TokenType::Dereference(_) => "Dereference".fmt(f),
         }
     }
 }
@@ -155,20 +159,22 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn first_is<F>(&self, pred: F) -> bool
-    where
-        F: Fn(char) -> bool,
-    {
-        !self.q_is_empty() && pred(self.content[self.cursor])
-    }
-
     fn strip_left(&mut self) {
-        while self.first_is(|c| c.is_ascii_whitespace()) {
-            if self.first_is(|c| c == '\n') {
+        while let Some(c) = self.q_pop_if(|c| c.is_ascii_whitespace()) {
+            if c == '\n' {
                 self.line += 1;
-                self.line_start = self.cursor + 1;
+                self.line_start = self.cursor;
             }
-            self.cursor += 1;
+            // Line comment
+            if self.q_pop_if(|c| *c == '#').is_some() {
+                while let Some(c) = self.q_pop() {
+                    if c == '\n' || self.q_is_empty() {
+                        self.line += 1;
+                        self.line_start = self.cursor + 1;
+                        break;
+                    }
+                }
+            }
         }
     }
 }
@@ -202,7 +208,7 @@ impl<'a> Iterator for Lexer<'a> {
         let start = self.cursor;
 
         //String literal
-        if let Some(_) = self.q_pop_if(|c| *c == '\"') {
+        if self.q_pop_if(|c| *c == '\"').is_some() {
             while let Some(c) = self.q_pop() {
                 if c == '\"' {
                     break;
@@ -228,7 +234,7 @@ impl<'a> Iterator for Lexer<'a> {
             });
         }
         //Char literal
-        if let Some(_) = self.q_pop_if(|c| *c == '\'') {
+        if self.q_pop_if(|c| *c == '\'').is_some() {
             while let Some(c) = self.q_peek() {
                 if *c == '\'' {
                     break;
@@ -238,6 +244,7 @@ impl<'a> Iterator for Lexer<'a> {
                     exit(1);
                 }
                 self.q_pop_if(|c| *c == '\\');
+                self.q_pop();
             }
             self.q_pop();
             if self.cursor - start < 3 {
@@ -265,8 +272,8 @@ impl<'a> Iterator for Lexer<'a> {
             });
         }
         //Integer literal
-        if let Some(_) = self.q_pop_if(|c| c.is_ascii_digit()) {
-            while let Some(_) = self.q_pop_if(|c| c.is_ascii_digit()) {}
+        if self.q_pop_if(|c| c.is_ascii_digit()).is_some() {
+            while self.q_pop_if(|c| c.is_ascii_digit()).is_some() {}
             return Some(Token {
                 loc: self.get_loc(),
                 token_type: TokenType::IntLit(
@@ -279,8 +286,17 @@ impl<'a> Iterator for Lexer<'a> {
             });
         }
         //Multi-character identifier
-        if let Some(_) = self.q_pop_if(|c| c.is_ascii_alphabetic() || *c == '_') {
-            while let Some(_) = self.q_pop_if(|c| c.is_ascii_alphabetic() || *c == '_') {}
+        if self
+            .q_pop_if(|c| c.is_ascii_alphabetic() || *c == '_' || *c == '*')
+            .is_some()
+        {
+            while let Some(c) =
+                self.q_pop_if(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == ':')
+            {
+                if c == ':' {
+                    break;
+                }
+            }
             let buf = self.content[start..self.cursor].iter().collect::<String>();
             return match buf.as_str() {
                 "syscall" => Some(Token {
@@ -315,6 +331,26 @@ impl<'a> Iterator for Lexer<'a> {
                     loc: self.get_loc(),
                     token_type: TokenType::Do,
                 }),
+                "*" => Some(Token {
+                    loc: self.get_loc(),
+                    token_type: TokenType::BinOp(OpType::Times),
+                }),
+                "*8:" => Some(Token {
+                    loc: self.get_loc(),
+                    token_type: TokenType::Dereference(8),
+                }),
+                "*16:" => Some(Token {
+                    loc: self.get_loc(),
+                    token_type: TokenType::Dereference(16),
+                }),
+                "*32:" => Some(Token {
+                    loc: self.get_loc(),
+                    token_type: TokenType::Dereference(32),
+                }),
+                "*64:" => Some(Token {
+                    loc: self.get_loc(),
+                    token_type: TokenType::Dereference(64),
+                }),
                 _ => Some(Token {
                     loc: self.get_loc(),
                     token_type: TokenType::Ident(buf),
@@ -339,7 +375,7 @@ impl<'a> Iterator for Lexer<'a> {
                     token_type: TokenType::Semi,
                 }),
                 "=" => {
-                    if let Some(_) = self.q_pop_if(|c| *c == '=') {
+                    if self.q_pop_if(|c| *c == '=').is_some() {
                         Some(Token {
                             loc: self.get_loc(),
                             token_type: TokenType::BinOp(OpType::Equal),
@@ -352,7 +388,12 @@ impl<'a> Iterator for Lexer<'a> {
                     }
                 }
                 ">" => {
-                    if let Some(_) = self.q_pop_if(|c| *c == '=') {
+                    if self.q_pop_if(|c| *c == '>').is_some() {
+                        Some(Token {
+                            loc: self.get_loc(),
+                            token_type: TokenType::BinOp(OpType::RShift),
+                        })
+                    } else if self.q_pop_if(|c| *c == '=').is_some() {
                         Some(Token {
                             loc: self.get_loc(),
                             token_type: TokenType::BinOp(OpType::GreaterEqual),
@@ -365,7 +406,12 @@ impl<'a> Iterator for Lexer<'a> {
                     }
                 }
                 "<" => {
-                    if let Some(_) = self.q_pop_if(|c| *c == '=') {
+                    if self.q_pop_if(|c| *c == '<').is_some() {
+                        Some(Token {
+                            loc: self.get_loc(),
+                            token_type: TokenType::BinOp(OpType::LShift),
+                        })
+                    } else if self.q_pop_if(|c| *c == '=').is_some() {
                         Some(Token {
                             loc: self.get_loc(),
                             token_type: TokenType::BinOp(OpType::LessEqual),
@@ -374,19 +420,6 @@ impl<'a> Iterator for Lexer<'a> {
                         Some(Token {
                             loc: self.get_loc(),
                             token_type: TokenType::BinOp(OpType::Less),
-                        })
-                    }
-                }
-                "*" => {
-                    if let Some(_) = self.q_pop_if(|c| *c == ':') {
-                        Some(Token {
-                            loc: self.get_loc(),
-                            token_type: TokenType::Dereference,
-                        })
-                    } else {
-                        Some(Token {
-                            loc: self.get_loc(),
-                            token_type: TokenType::BinOp(OpType::Times),
                         })
                     }
                 }
@@ -399,7 +432,7 @@ impl<'a> Iterator for Lexer<'a> {
                     token_type: TokenType::BinOp(OpType::Modulo),
                 }),
                 "|" => {
-                    if let Some(_) = self.q_pop_if(|c| *c == '|') {
+                    if self.q_pop_if(|c| *c == '|').is_some() {
                         Some(Token {
                             loc: self.get_loc(),
                             token_type: TokenType::BinOp(OpType::LogicalOr),
@@ -412,12 +445,12 @@ impl<'a> Iterator for Lexer<'a> {
                     }
                 }
                 "&" => {
-                    if let Some(_) = self.q_pop_if(|c| *c == '&') {
+                    if self.q_pop_if(|c| *c == '&').is_some() {
                         Some(Token {
                             loc: self.get_loc(),
                             token_type: TokenType::BinOp(OpType::LogicalAnd),
                         })
-                    } else if let Some(_) = self.q_pop_if(|c| *c == ':') {
+                    } else if self.q_pop_if(|c| *c == ':').is_some() {
                         Some(Token {
                             token_type: TokenType::Address,
                             loc: self.get_loc(),
