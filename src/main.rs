@@ -14,10 +14,8 @@ const DEBUG_FILENAME: &str = "examples/helloworld.ns";
 
 fn usage(args: Vec<String>) -> String {
     let mut usage = format!("Usage: {} <filepath> [option]\n", args.get(0).unwrap());
-    usage.push_str(format!("options:\n").as_str());
-    usage.push_str(
-        format!("\t-o <filepath>\t\tThe executable will be output to <filepath>\n").as_str(),
-    );
+    usage.push_str("options:\n");
+    usage.push_str("\t-o <filepath>\t\tThe executable will be output to <filepath>\n");
     usage
 }
 
@@ -97,7 +95,7 @@ fn main() {
     if !Command::new("ld")
         .arg("tmp.o")
         .arg("-o")
-        .arg(format!("{output_filepath}"))
+        .arg(&output_filepath)
         .status()
         .expect("Cannot run `ld`")
         .success()
